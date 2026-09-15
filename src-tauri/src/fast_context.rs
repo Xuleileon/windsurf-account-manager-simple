@@ -3,9 +3,17 @@ use crate::{models::{Account, AccountStatus}, repository::{DataStore, SqliteAcco
 use std::{path::PathBuf, sync::Arc};
 use tauri::State;
 
+fn search_credential(a: &Account) -> Option<&str> {
+    if a.auth_provider.as_deref() == Some("devin") {
+        a.token.as_deref().filter(|t| t.starts_with("devin-session-token$") && t.len() > 20)
+    } else {
+        a.windsurf_api_key.as_deref().filter(|k| !k.trim().is_empty())
+    }
+}
+
 fn ready(a: &Account) -> bool {
     matches!(a.status, AccountStatus::Active) && a.is_disabled != Some(true)
-        && a.windsurf_api_key.as_deref().is_some_and(|k| !k.trim().is_empty())
+        && search_credential(a).is_some()
 }
 
 #[tauri::command]
@@ -18,7 +26,7 @@ pub fn fast_context_accounts(store: State<'_, Arc<DataStore>>) -> Result<serde_j
 
 fn credentials(accounts: Vec<Account>) -> serde_json::Value {
     serde_json::json!({"accounts": accounts.into_iter().filter(ready).map(|a|
-        serde_json::json!({"accountId": a.id, "apiKey": a.windsurf_api_key.unwrap()})
+        serde_json::json!({"accountId": a.id, "apiKey": search_credential(&a).unwrap()})
     ).collect::<Vec<_>>()})
 }
 
@@ -41,6 +49,17 @@ pub fn credential_cli() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn devin_uses_session_not_user_identifier() {
+        let mut a = Account::new("test@example.invalid".into(), "".into(), "".into(), vec![]);
+        a.status = AccountStatus::Active;
+        a.auth_provider = Some("devin".into());
+        a.windsurf_api_key = Some("user-identifier".into());
+        assert!(!ready(&a));
+        a.token = Some("devin-session-token$test-session".into());
+        assert!(ready(&a));
+        assert_eq!(credentials(vec![a])["accounts"][0]["apiKey"], "devin-session-token$test-session");
+    }
     #[test]
     fn bridge_filters_accounts_and_never_exports_login_secrets() {
         let mut a = Account::new("test@example.invalid".into(), "private-password".into(), "test".into(), vec![]);

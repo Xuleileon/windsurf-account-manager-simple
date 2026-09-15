@@ -13,7 +13,7 @@ An encrypted database backup alone is not portable: it needs the original OS cre
 
 ## Scope
 
-Fast Context integration is available through `--fast-context-credential`: a local process pipe returns only active account IDs and API keys. The Fast Context fork automatically selects the least recently used eligible credential and tracks cooldowns; there is no manual account selection. The sidebar Fast Context dialog shows credential readiness. No HTTP credential endpoint or plaintext export is added. Login and session refresh remain user-driven; this does not extend server-issued credential lifetimes.
+Fast Context integration is available through `--fast-context-credential`: a local process pipe returns only active account IDs and search credentials (Devin session tokens for Devin accounts, API keys for legacy accounts). The Fast Context fork automatically selects the least recently used eligible credential and tracks cooldowns; there is no manual account selection. The sidebar Fast Context dialog shows credential readiness. No HTTP credential endpoint or plaintext export is added. Login and session refresh remain user-driven; this does not extend server-issued credential lifetimes.
 
 ## Verification
 
