@@ -1,3 +1,4 @@
+pub mod fast_context;
 mod models;
 mod repository;
 mod services;
@@ -95,6 +96,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            fast_context::fast_context_accounts,
             // 账号管理命令
             commands::add_account,
             commands::add_account_by_refresh_token,

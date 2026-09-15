@@ -13,7 +13,7 @@ An encrypted database backup alone is not portable: it needs the original OS cre
 
 ## Scope
 
-This change does not add account rotation, token refresh scheduling, or a Fast Context credential API. It does not extend a server-issued credential lifetime. Existing manual login/refresh flows remain in place.
+Fast Context integration is available through `--fast-context-credential`: a local process pipe returns only active account IDs and API keys. The Fast Context fork automatically selects the least recently used eligible credential and tracks cooldowns; there is no manual account selection. The sidebar Fast Context dialog shows credential readiness. No HTTP credential endpoint or plaintext export is added. Login and session refresh remain user-driven; this does not extend server-issued credential lifetimes.
 
 ## Verification
 

@@ -1,5 +1,6 @@
 <template>
   <el-container class="main-container">
+    <FastContextDialog v-model="showFastContext" />
     <!-- 侧边栏 -->
     <el-aside :width="sidebarWidth" class="sidebar" :class="{ 'is-collapsed': uiStore.sidebarCollapsed }" :style="{ overflow: 'hidden' }">
       <div class="app-title">
@@ -55,6 +56,9 @@
           </el-menu-item>
         </el-sub-menu>
         
+        <el-menu-item index="fast-context" @click="showFastContext = true">
+          <el-icon><Connection /></el-icon><template #title>Fast Context</template>
+        </el-menu-item>
         <el-menu-item index="logs" @click="uiStore.openLogsDialog">
           <el-icon><Document /></el-icon>
           <template #title>操作日志</template>
@@ -708,6 +712,8 @@ import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi, devinApi } from '@/api';
 import type { Account } from '@/types';
 import AccountCard from '@/components/AccountCard.vue';
+import FastContextDialog from '@/components/FastContextDialog.vue';
+const showFastContext = ref(false);
 // B5: vue-virtual-scroller 虚拟滚动（动态高度）
 // DynamicScroller 处理可变高度 items，仅渲染视口内 + buffer 范围
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
