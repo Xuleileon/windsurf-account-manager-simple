@@ -163,7 +163,7 @@
           :type="tokenExpiryType"
         >
           <el-icon><Key /></el-icon>
-          <span>{{ formatDate(account.token_expires_at) }}</span>
+          <span>{{ account.auth_provider === 'devin' ? '状态待核验' : formatDate(account.token_expires_at) }}</span>
         </el-tag>
       </div>
     </div>
@@ -846,6 +846,7 @@ const expiryClass = computed(() => {
 
 // Token过期类型
 const tokenExpiryType = computed(() => {
+  if (props.account.auth_provider === 'devin') return 'info';
   if (!props.account.token_expires_at) return 'info';
   const expiry = dayjs(props.account.token_expires_at);
   const now = dayjs();
@@ -860,6 +861,7 @@ const tokenExpiryType = computed(() => {
 
 // Token过期提示
 const tokenExpiryTooltip = computed(() => {
+  if (props.account.auth_provider === 'devin') return 'Devin 未提供真实到期时间，本地日期仅用于刷新调度；是否有效以服务端验证为准。';
   if (!props.account.token_expires_at) return '无Token';
   const expiry = dayjs(props.account.token_expires_at);
   const now = dayjs();

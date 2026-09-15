@@ -45,6 +45,13 @@ export const useUpdaterStore = defineStore('updater', () => {
    * @returns 是否发现可用更新
    */
   async function checkUpdate(silent = false): Promise<boolean> {
+    if (import.meta.env.VITE_SIGNED_UPDATES !== 'true') {
+      if (!silent) {
+        phase.value = 'error';
+        error.value = '此 fork 暂未提供签名自动更新，请从 fork 的 Releases 手动更新。';
+      }
+      return false;
+    }
     if (isBusy.value) return hasUpdate.value;
 
     if (silent) {

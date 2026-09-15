@@ -10,7 +10,7 @@ fn main() {
         let version_with_build = format!("{}.0", version);
 
         // 通过环境变量控制是否需要管理员权限
-        let require_admin = env::var("REQUIRE_ADMIN").unwrap_or_else(|_| "true".to_string());
+        let require_admin = env::var("REQUIRE_ADMIN").unwrap_or_else(|_| "false".to_string());
 
         if require_admin == "true" {
             // 嵌入完整的管理员权限清单

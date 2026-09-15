@@ -16,20 +16,25 @@ pub struct CryptoService {
 
 impl CryptoService {
     pub fn new() -> Result<Self> {
-        let key = Self::get_or_create_key()?;
+        Self::open(true)
+    }
+
+    pub fn open(allow_create: bool) -> Result<Self> {
+        let key = Self::get_or_create_key(allow_create)?;
         let key_bytes = STANDARD.decode(&key)?;
+        anyhow::ensure!(key_bytes.len() == 32, "Invalid credential encryption key length");
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(key);
         
         Ok(Self { cipher })
     }
 
-    fn get_or_create_key() -> Result<String> {
+    fn get_or_create_key(allow_create: bool) -> Result<String> {
         let entry = Entry::new(APP_NAME, KEY_NAME)?;
         
         match entry.get_password() {
             Ok(key) => Ok(key),
-            Err(_) => {
+            Err(keyring::Error::NoEntry) if allow_create => {
                 // 生成新的密钥
                 let mut key = vec![0u8; 32];
                 thread_rng().fill_bytes(&mut key);
@@ -40,7 +45,13 @@ impl CryptoService {
                 
                 Ok(key_base64)
             }
+            Err(_) => anyhow::bail!("Credential encryption key unavailable; restore the Windows credential or sign in as its owner. The key was not replaced."),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self { cipher: Aes256Gcm::new(&rand::random::<[u8; 32]>().into()) }
     }
 
     pub fn encrypt(&self, plaintext: &str) -> Result<String> {
@@ -68,7 +79,7 @@ impl CryptoService {
         let combined = STANDARD.decode(ciphertext)?;
         
         // 检查最小长度
-        if combined.len() < 12 {
+        if combined.len() < 28 {
             return Err(anyhow::anyhow!("Invalid ciphertext"));
         }
         
@@ -99,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt() {
-        let service = CryptoService::new().unwrap();
+        let service = CryptoService::for_test();
         let plaintext = "Hello, World!";
         
         let encrypted = service.encrypt(plaintext).unwrap();

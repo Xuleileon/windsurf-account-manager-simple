@@ -525,7 +525,7 @@
                   <td class="value-cell">{{ formatDate(accountInfo.local_info?.last_login_at) || '-' }}</td>
                 </tr>
                 <tr>
-                  <td class="label-cell">Token过期时间</td>
+                  <td class="label-cell">{{ isDevinAccount ? '本地刷新参考时间（非有效期）' : 'Token过期时间' }}</td>
                   <td class="value-cell">{{ formatDate(accountInfo.local_info?.token_expires_at) || '-' }}</td>
                 </tr>
                 <tr>

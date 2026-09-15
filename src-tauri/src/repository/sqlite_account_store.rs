@@ -19,6 +19,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::utils::crypto::CryptoService;
 use crate::models::{Account, AccountStatus, TagWithColor};
 use crate::utils::{AppError, AppResult};
 
@@ -92,6 +93,7 @@ pub struct AccountAggregates {
 
 pub struct SqliteAccountStore {
     conn: Mutex<Connection>,
+    crypto: CryptoService,
     /// P2: COUNT(*) 结果缓存。key 为 filter 条件的 hash（不含 page/page_size/sort），
     /// value 为 `(count, 写入时刻)`。命中且未过期则跳过 SQL `COUNT(*)`，节省 20-100ms。
     /// 写操作（insert/upsert/delete/batch update）会清空缓存以保证一致性。
@@ -123,7 +125,7 @@ impl SqliteAccountStore {
             .map_err(|e| AppError::Config(format!("SQLite open failed: {}", e)))?;
 
         // WAL 模式：并发读 + 写不阻塞读
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;")
             .map_err(|e| AppError::Config(format!("SQLite PRAGMA failed: {}", e)))?;
 
         conn.execute_batch(Self::CREATE_SCHEMA)
@@ -132,10 +134,68 @@ impl SqliteAccountStore {
         // 增量迁移：为已有数据库添加新字段
         Self::migrate_columns(&conn);
 
-        Ok(Self {
-            conn: Mutex::new(conn),
-            count_cache: Mutex::new(HashMap::new()),
-        })
+        let has_encrypted: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE password LIKE 'wam:v1:%' OR token LIKE 'wam:v1:%' OR refresh_token LIKE 'wam:v1:%' OR windsurf_api_key LIKE 'wam:v1:%' OR devin_auth1_token LIKE 'wam:v1:%')", [], |r| r.get(0))
+            .map_err(|_| AppError::Config("Cannot inspect credential encryption state".into()))?;
+        let crypto = CryptoService::open(!has_encrypted)
+            .map_err(|e| AppError::Config(e.to_string()))?;
+        let store = Self { conn: Mutex::new(conn), crypto, count_cache: Mutex::new(HashMap::new()) };
+        store.migrate_credentials()?;
+        Ok(store)
+    }
+
+
+    fn seal(&self, value: &str) -> AppResult<String> {
+        if value.is_empty() { return Ok(String::new()); }
+        self.crypto.encrypt(value).map(|v| format!("wam:v1:{}", v))
+            .map_err(|_| AppError::Config("Credential encryption failed".into()))
+    }
+
+    fn unseal(&self, value: String) -> rusqlite::Result<String> {
+        match value.strip_prefix("wam:v1:") {
+            Some(ciphertext) => self.crypto.decrypt(ciphertext).map_err(|_| rusqlite::Error::InvalidQuery),
+            None => Ok(value), // Legacy plaintext is migrated transactionally at open.
+        }
+    }
+
+    fn seal_account(&self, account: &Account) -> AppResult<Account> {
+        let mut stored = account.clone();
+        stored.password = self.seal(&stored.password)?;
+        stored.token = stored.token.as_deref().map(|v| self.seal(v)).transpose()?;
+        stored.refresh_token = stored.refresh_token.as_deref().map(|v| self.seal(v)).transpose()?;
+        stored.windsurf_api_key = stored.windsurf_api_key.as_deref().map(|v| self.seal(v)).transpose()?;
+        stored.devin_auth1_token = stored.devin_auth1_token.as_deref().map(|v| self.seal(v)).transpose()?;
+        Ok(stored)
+    }
+
+    fn migrate_credentials(&self) -> AppResult<()> {
+        let mut conn = self.conn.lock().map_err(|_| AppError::Config("Store locked".into()))?;
+        let tx = conn.transaction().map_err(|_| AppError::Config("Migration could not start".into()))?;
+        let mut changed = false;
+        for column in ["password", "token", "refresh_token", "windsurf_api_key", "devin_auth1_token"] {
+            let sql = format!("SELECT id, {} FROM accounts WHERE {} IS NOT NULL AND {} != ''", column, column, column);
+            let entries = {
+                let mut stmt = tx.prepare(&sql).map_err(|_| AppError::Config("Migration query failed".into()))?;
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(|_| AppError::Config("Migration query failed".into()))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|_| AppError::Config("Migration read failed".into()))?
+            };
+            for (id, value) in entries {
+                if value.starts_with("wam:v1:") {
+                    self.unseal(value).map_err(|_| AppError::Config("Credential decryption failed; migration rolled back".into()))?;
+                    continue;
+                }
+                tx.execute(&format!("UPDATE accounts SET {}=?1 WHERE id=?2", column), params![self.seal(&value)?, id])
+                    .map_err(|_| AppError::Config("Credential migration failed".into()))?;
+                changed = true;
+            }
+        }
+        tx.commit().map_err(|_| AppError::Config("Migration commit failed".into()))?;
+        if changed {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(|_| AppError::Config("Encrypted credentials saved, but database cleanup failed".into()))?;
+        }
+        Ok(())
     }
 
     fn migrate_columns(conn: &Connection) {
@@ -267,6 +327,7 @@ impl SqliteAccountStore {
     // ==================== CRUD ====================
 
     pub fn insert_account(&self, account: &Account) -> AppResult<()> {
+        let account = self.seal_account(account)?;
         let conn = self.conn.lock().map_err(|e| AppError::Config(format!("lock: {}", e)))?;
         conn.execute(
             r#"INSERT INTO accounts (
@@ -337,6 +398,7 @@ impl SqliteAccountStore {
     }
 
     pub fn upsert_account(&self, account: &Account) -> AppResult<()> {
+        let account = self.seal_account(account)?;
         let conn = self.conn.lock().map_err(|e| AppError::Config(format!("lock: {}", e)))?;
         conn.execute(
             r#"INSERT OR REPLACE INTO accounts (
@@ -410,15 +472,18 @@ impl SqliteAccountStore {
         let conn = self.conn.lock().map_err(|e| AppError::Config(format!("lock: {}", e)))?;
         let mut stmt = conn.prepare("SELECT * FROM accounts WHERE id = ?1")
             .map_err(|e| AppError::Config(format!("prepare: {}", e)))?;
-        stmt.query_row(params![id.to_string()], |row| Self::row_to_account(row))
-            .map_err(|e| AppError::AccountNotFound(format!("{}: {}", id, e)))
+        stmt.query_row(params![id.to_string()], |row| self.row_to_account(row))
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => AppError::AccountNotFound(id.to_string()),
+                _ => AppError::Config("Account read or credential decryption failed".into()),
+            })
     }
 
     pub fn get_account_by_email(&self, email: &str) -> AppResult<Option<Account>> {
         let conn = self.conn.lock().map_err(|e| AppError::Config(format!("lock: {}", e)))?;
         let mut stmt = conn.prepare("SELECT * FROM accounts WHERE email = ?1 COLLATE NOCASE")
             .map_err(|e| AppError::Config(format!("prepare: {}", e)))?;
-        stmt.query_row(params![email], |row| Self::row_to_account(row))
+        stmt.query_row(params![email], |row| self.row_to_account(row))
             .optional()
             .map_err(|e| AppError::Config(format!("get_by_email: {}", e)))
     }
@@ -466,10 +531,10 @@ impl SqliteAccountStore {
         let conn = self.conn.lock().map_err(|e| AppError::Config(format!("lock: {}", e)))?;
         let mut stmt = conn.prepare("SELECT * FROM accounts ORDER BY sort_order ASC, created_at ASC")
             .map_err(|e| AppError::Config(format!("prepare: {}", e)))?;
-        let accounts = stmt.query_map([], |row| Self::row_to_account(row))
+        let accounts = stmt.query_map([], |row| self.row_to_account(row))
             .map_err(|e| AppError::Config(format!("query: {}", e)))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|_| AppError::Config("Account read/decryption failed; no records were discarded".into()))?;
         Ok(accounts)
     }
 
@@ -488,9 +553,9 @@ impl SqliteAccountStore {
                 stmt.raw_bind_parameter(i + 1, id.as_str()).map_err(|e| AppError::Config(format!("bind: {}", e)))?;
             }
             let batch: Vec<Account> = stmt.raw_query()
-                .mapped(|row| Self::row_to_account(row))
-                .filter_map(|r| r.ok())
-                .collect();
+                .mapped(|row| self.row_to_account(row))
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|_| AppError::Config("Account read/decryption failed".into()))?;
             all_accounts.extend(batch);
         }
         Ok(all_accounts)
@@ -731,10 +796,10 @@ impl SqliteAccountStore {
         let mut stmt = conn.prepare(&data_sql)
             .map_err(|e| AppError::Config(format!("prepare page: {}", e)))?;
 
-        let accounts: Vec<Account> = stmt.query_map(bind_refs.as_slice(), |row| Self::row_to_account(row))
+        let accounts: Vec<Account> = stmt.query_map(bind_refs.as_slice(), |row| self.row_to_account(row))
             .map_err(|e| AppError::Config(format!("page query: {}", e)))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|_| AppError::Config("Account read/decryption failed".into()))?;
 
         // 释放 conn lock（drop stmt + conn）后再写 count_cache，避免 Mutex 交叉持有
         drop(stmt);
@@ -930,6 +995,7 @@ impl SqliteAccountStore {
 
     /// 批量导入账号（迁移用，事务内批量 INSERT）
     pub fn bulk_insert(&self, accounts: &[Account]) -> AppResult<usize> {
+        let accounts = accounts.iter().map(|a| self.seal_account(a)).collect::<AppResult<Vec<_>>>()?;
         let conn = self.conn.lock().map_err(|e| AppError::Config(format!("lock: {}", e)))?;
         conn.execute("BEGIN TRANSACTION", [])
             .map_err(|e| AppError::Config(format!("begin: {}", e)))?;
@@ -1010,7 +1076,7 @@ impl SqliteAccountStore {
 
     // ==================== 内部辅助 ====================
 
-    fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
+    fn row_to_account(&self, row: &rusqlite::Row) -> rusqlite::Result<Account> {
         let id_str: String = row.get("id")?;
         let tags_json: String = row.get("tags")?;
         let tag_colors_json: String = row.get("tag_colors")?;
@@ -1029,13 +1095,13 @@ impl SqliteAccountStore {
         Ok(Account {
             id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
             email: row.get("email")?,
-            password: row.get("password")?,
+            password: self.unseal(row.get::<_, String>("password")?)?,
             nickname: row.get("nickname")?,
             tags: serde_json::from_str(&tags_json).unwrap_or_default(),
             tag_colors: serde_json::from_str(&tag_colors_json).unwrap_or_default(),
             group: row.get("group")?,
-            token: row.get("token")?,
-            refresh_token: row.get("refresh_token")?,
+            token: row.get::<_, Option<String>>("token")?.map(|v| self.unseal(v)).transpose()?,
+            refresh_token: row.get::<_, Option<String>>("refresh_token")?.map(|v| self.unseal(v)).transpose()?,
             token_expires_at: token_expires_at.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|dt| dt.with_timezone(&Utc)),
             last_seat_count: row.get("last_seat_count")?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
@@ -1049,7 +1115,7 @@ impl SqliteAccountStore {
             last_quota_update: last_quota_update.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|dt| dt.with_timezone(&Utc)),
             subscription_expires_at: subscription_expires_at.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|dt| dt.with_timezone(&Utc)),
             subscription_active: subscription_active.map(|v| v != 0),
-            windsurf_api_key: row.get("windsurf_api_key")?,
+            windsurf_api_key: row.get::<_, Option<String>>("windsurf_api_key")?.map(|v| self.unseal(v)).transpose()?,
             is_disabled: is_disabled.map(|v| v != 0),
             is_team_owner: is_team_owner.map(|v| v != 0),
             billing_strategy: row.get("billing_strategy")?,
@@ -1059,7 +1125,7 @@ impl SqliteAccountStore {
             weekly_quota_reset_at_unix: row.get("weekly_quota_reset_at_unix")?,
             overage_balance_micros: row.get("overage_balance_micros")?,
             sort_order: row.get("sort_order")?,
-            devin_auth1_token: row.get("devin_auth1_token")?,
+            devin_auth1_token: row.get::<_, Option<String>>("devin_auth1_token")?.map(|v| self.unseal(v)).transpose()?,
             devin_account_id: row.get("devin_account_id")?,
             devin_primary_org_id: row.get("devin_primary_org_id")?,
             auth_provider: row.get("auth_provider")?,
@@ -1159,5 +1225,74 @@ impl SqliteAccountStore {
             }
         }
         counts
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    fn store() -> SqliteAccountStore {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SqliteAccountStore::CREATE_SCHEMA).unwrap();
+        SqliteAccountStore::migrate_columns(&conn);
+        SqliteAccountStore { conn: Mutex::new(conn), crypto: CryptoService::for_test(), count_cache: Mutex::new(HashMap::new()) }
+    }
+    #[test]
+    fn credentials_roundtrip_and_migration() {
+        let store = store();
+        let mut a = Account::new("test@example.invalid".into(), "test-password".into(), "test".into(), vec![]);
+        a.token = Some("test-token".into());
+        a.refresh_token = Some("test-refresh".into());
+        a.windsurf_api_key = Some("test-api-key".into());
+        a.devin_auth1_token = Some("test-auth1".into());
+        store.insert_account(&a).unwrap();
+        let read = store.get_account(&a.id).unwrap();
+        assert_eq!(read.password, a.password);
+        assert_eq!(read.token, a.token);
+        assert_eq!(read.refresh_token, a.refresh_token);
+        assert_eq!(read.windsurf_api_key, a.windsurf_api_key);
+        assert_eq!(read.devin_auth1_token, a.devin_auth1_token);
+        {
+            let conn = store.conn.lock().unwrap();
+            for col in ["password", "token", "refresh_token", "windsurf_api_key", "devin_auth1_token"] {
+                let raw: String = conn.query_row(&format!("SELECT {} FROM accounts", col), [], |r| r.get(0)).unwrap();
+                assert!(raw.starts_with("wam:v1:"));
+            }
+            conn.execute("UPDATE accounts SET password='legacy-test'", []).unwrap();
+        }
+        store.migrate_credentials().unwrap();
+        store.migrate_credentials().unwrap();
+        assert_eq!(store.get_account(&a.id).unwrap().password, "legacy-test");
+        store.upsert_account(&a).unwrap();
+        assert_eq!(store.get_account(&a.id).unwrap().token, a.token);
+    }
+    #[test]
+    fn bulk_import_preserves_empty_fields_and_rejects_wrong_key() {
+        let mut store = store();
+        let mut a = Account::new("bulk@example.invalid".into(), "".into(), "test".into(), vec![]);
+        a.token = Some(String::new());
+        a.windsurf_api_key = Some("test-key".into());
+        assert_eq!(store.bulk_insert(&[a.clone()]).unwrap(), 1);
+        let read = store.get_account(&a.id).unwrap();
+        assert_eq!(read.password, "");
+        assert_eq!(read.token, Some(String::new()));
+        assert_eq!(read.refresh_token, None);
+        assert_eq!(read.windsurf_api_key, a.windsurf_api_key);
+        store.crypto = CryptoService::for_test();
+        assert!(store.get_account(&a.id).is_err());
+        assert!(store.get_all_accounts().is_err());
+        assert!(store.migrate_credentials().is_err());
+    }
+
+    #[test]
+    fn corrupt_credentials_abort_migration_without_partial_changes() {
+        let store = store();
+        let a = Account::new("test@example.invalid".into(), "test".into(), "test".into(), vec![]);
+        store.insert_account(&a).unwrap();
+        store.conn.lock().unwrap().execute("UPDATE accounts SET password='legacy', token='wam:v1:broken'", []).unwrap();
+        assert!(store.migrate_credentials().is_err());
+        let raw: String = store.conn.lock().unwrap().query_row("SELECT password FROM accounts", [], |r| r.get(0)).unwrap();
+        assert_eq!(raw, "legacy");
+        assert!(store.get_account(&a.id).is_err());
     }
 }
