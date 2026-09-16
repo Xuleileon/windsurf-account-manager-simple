@@ -1,4 +1,5 @@
 pub mod fast_context;
+mod data_directory;
 mod models;
 mod repository;
 mod services;

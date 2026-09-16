@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
-use tauri::{Manager, Emitter};
+use tauri::Emitter;
 use chrono::Local;
 use serde::Serialize;
 
@@ -49,8 +49,7 @@ pub struct DataStore {
 
 impl DataStore {
     pub fn new(app_handle: &tauri::AppHandle) -> AppResult<Self> {
-        let app_data_dir = app_handle.path().app_data_dir()
-            .map_err(|e| AppError::Config(format!("Failed to get app data dir: {}", e)))?;
+        let app_data_dir = crate::data_directory::for_app(app_handle).map_err(AppError::Config)?;
         
         // 确保目录存在
         fs::create_dir_all(&app_data_dir)?;

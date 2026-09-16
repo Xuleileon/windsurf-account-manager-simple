@@ -4,7 +4,7 @@ use crate::services::{AuthContext, WindsurfService};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use tauri::{State, Manager};
+use tauri::State;
 use chrono::Utc;
 use std::fs;
 use std::path::PathBuf;
@@ -18,8 +18,7 @@ pub struct AutoResetStore {
 
 impl AutoResetStore {
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, String> {
-        let app_data_dir = app_handle.path().app_data_dir()
-            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        let app_data_dir = crate::data_directory::for_app(app_handle)?;
         
         fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
         
@@ -138,8 +137,7 @@ pub struct ResetRecordStore {
 
 impl ResetRecordStore {
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, String> {
-        let app_data_dir = app_handle.path().app_data_dir()
-            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        let app_data_dir = crate::data_directory::for_app(app_handle)?;
         
         fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
         

@@ -9,6 +9,23 @@ Changes from upstream 1.8.1:
 
 ## Backup and export
 
+### Shared Windows data directory
+
+The optional current-user registry string `HKCU\Software\WindsurfAccountManager\DataDirectory`
+selects one absolute, existing data directory for the GUI, account bridge, settings,
+reset records and backups. It must already contain `accounts.db`. Missing or invalid
+configured storage fails explicitly; it never falls back to another AppData view or
+creates an empty replacement account database. Without this setting the existing
+default location is preserved.
+
+To migrate, close the GUI, take a consistent SQLite backup plus the active JSON
+settings, copy them to a user-protected directory, verify account records match, and
+only then set `DataDirectory`. Keep the original directory for rollback. The OS
+credential-store key remains in place; it is not copied into the data directory.
+Validate both an ordinary launch and the actual scheduler/gateway launch context.
+`WAM_DATA_CONFIG_ERROR` from the credential bridge means the configured directory
+cannot be used; changing search parameters or re-logging in is not a remedy.
+
 An encrypted database backup alone is not portable: it needs the original OS credential store key. Losing that key means signing in again or restoring a separately protected export. Explicit account exports remain plaintext for compatibility and must be stored securely. Existing JSON files, old backups, logs, and external client credentials are not retroactively encrypted by this change. No accounts are imported or logged in automatically.
 
 ## Scope

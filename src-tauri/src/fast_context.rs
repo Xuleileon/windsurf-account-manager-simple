@@ -1,6 +1,6 @@
 //! Local credential bridge. No listener or plaintext credential export.
 use crate::{models::{Account, AccountStatus}, repository::{DataStore, SqliteAccountStore}};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tauri::State;
 
 fn search_credential(a: &Account) -> Option<&str> {
@@ -33,8 +33,7 @@ fn credentials(accounts: Vec<Account>) -> serde_json::Value {
 /// Runs before GUI startup. Stdout is a private pipe to the MCP process.
 pub fn credential_cli() -> i32 {
     let result = (|| {
-        let base = std::env::var_os("APPDATA").ok_or("WAM_DATA_NOT_FOUND")?;
-        let db = PathBuf::from(base).join("com.chao.windsurf-account-manager").join("accounts.db");
+        let db = crate::data_directory::for_bridge().map_err(|_| "WAM_DATA_CONFIG_ERROR")?.join("accounts.db");
         if !db.is_file() { return Err("WAM_DATA_NOT_FOUND"); }
         let store = SqliteAccountStore::open(&db).map_err(|_| "WAM_STORAGE_ERROR")?;
         let accounts = store.get_all_accounts().map_err(|_| "WAM_STORAGE_ERROR")?;

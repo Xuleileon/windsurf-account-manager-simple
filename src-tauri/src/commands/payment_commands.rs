@@ -1321,15 +1321,14 @@ pub async fn inject_auto_submit_script(
 use std::path::PathBuf;
 
 /// 获取成功BIN池文件路径
-fn get_success_bins_file_path(app: &AppHandle) -> PathBuf {
-    let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
-    app_data_dir.join("success_bins.json")
+fn get_success_bins_file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(crate::data_directory::for_app(app)?.join("success_bins.json"))
 }
 
 /// 获取成功BIN列表
 #[command]
 pub async fn get_success_bins(app: AppHandle) -> Result<Vec<String>, String> {
-    let file_path = get_success_bins_file_path(&app);
+    let file_path = get_success_bins_file_path(&app)?;
     if !file_path.exists() {
         return Ok(Vec::new());
     }
@@ -1342,7 +1341,7 @@ pub async fn get_success_bins(app: AppHandle) -> Result<Vec<String>, String> {
 /// 添加成功BIN到池中
 #[command]
 pub async fn add_success_bin(app: AppHandle, bin: String) -> Result<(), String> {
-    let file_path = get_success_bins_file_path(&app);
+    let file_path = get_success_bins_file_path(&app)?;
     
     // 读取现有列表
     let mut bins: Vec<String> = if file_path.exists() {
@@ -1374,7 +1373,7 @@ pub async fn add_success_bin(app: AppHandle, bin: String) -> Result<(), String> 
 /// 清空成功BIN池
 #[command]
 pub async fn clear_success_bins(app: AppHandle) -> Result<(), String> {
-    let file_path = get_success_bins_file_path(&app);
+    let file_path = get_success_bins_file_path(&app)?;
     if file_path.exists() {
         fs::remove_file(&file_path).map_err(|e| e.to_string())?;
     }
